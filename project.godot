@@ -1,0 +1,28 @@
+; Engine configuration file.
+config_version=5
+
+[application]
+
+config/name="GoCarTraffic"
+config/description="Build roads and public transport so a growing town keeps moving."
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.3", "Forward Plus")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+window/stretch/aspect="expand"
+
+[rendering]
+
+; Forward+ uses the Vulkan backend on Windows and Linux (Direct3D 12 optional on Windows).
+renderer/rendering_method="forward_plus"
+rendering_device/driver.windows="vulkan"
+rendering_device/driver.linuxbsd="vulkan"
+; Godot 4.4+: fall back to OpenGL automatically when no Vulkan driver exists.
+rendering_device/fallback_to_opengl3=true
+anti_aliasing/quality/msaa_3d=2
+environment/defaults/default_clear_color=Color(0.55, 0.72, 0.86, 1)
