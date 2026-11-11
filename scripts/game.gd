@@ -461,7 +461,7 @@ func _unhandled_input(e: InputEvent) -> void:
 				set_speed(minf(4.0, maxf(1.0, speed * 2.0)))
 			KEY_MINUS, KEY_KP_SUBTRACT:
 				set_speed(maxf(1.0, speed * 0.5))
-			KEY_F1:
+			KEY_F1, KEY_H:
 				hud.toggle_help()
 			KEY_ENTER, KEY_KP_ENTER:
 				if tool == T_LINE:

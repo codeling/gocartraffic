@@ -9,6 +9,15 @@ streets and the public transport. **Every trip that arrives within its time
 limit earns credits** – the goal is to move as many people as fast as possible
 and to understand (and remove) the reasons for traffic jams.
 
+## Play in the browser
+
+Every push to `main` is exported for the web and published with GitHub Pages
+(`.github/workflows/web.yml`): **https://codeling.github.io/gocartraffic/**
+
+One-time setup: in the repository settings open *Pages* and set *Source* to
+*GitHub Actions*. The web build uses WebGL 2 (Godot's Compatibility renderer)
+because browsers cannot run the Vulkan renderer; the desktop version uses Vulkan.
+
 ## Run it
 
 1. Install [Godot 4.3 or newer](https://godotengine.org/download) (standard build, not .NET).
@@ -29,6 +38,7 @@ Linux are included (`export_presets.cfg`) – or:
 ```
 godot --headless --path . --export-release "Windows Desktop"
 godot --headless --path . --export-release "Linux"
+godot --headless --path . --export-release "Web" build/web/index.html
 ```
 
 ## How to play
@@ -42,7 +52,7 @@ godot --headless --path . --export-release "Linux"
 | `5` | Bus stop | Place stops on roads; people walk up to 5 tiles |
 | `6` | Bus line | Click stops in order, finish with `Enter` or right-click; buses loop along the stops |
 
-`T` traffic view · `Space` pause · `+` / `-` game speed · `F1` help ·
+`T` traffic view · `Space` pause · `+` / `-` game speed · `H` or `F1` help ·
 `WASD` / arrows / middle-mouse drag to pan · mouse wheel to zoom · `Q` / `E` to rotate.
 
 ### The simulation
