@@ -1,0 +1,64 @@
+name: Web build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GODOT_VERSION: 4.3
+  GODOT_RELEASE: https://github.com/godotengine/godot/releases/download/4.3-stable
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Godot and the web export template
+        run: |
+          curl -sSfL -o godot.zip "$GODOT_RELEASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/Godot_v${GODOT_VERSION}-stable_linux.x86_64" "$RUNNER_TEMP/godot"
+          curl -sSfL -o templates.tpz "$GODOT_RELEASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          mkdir -p "$dest"
+          unzip -q -j templates.tpz 'templates/web_nothreads_*' 'templates/version.txt' -d "$dest"
+          rm godot.zip templates.tpz
+
+      - name: Import project
+        run: '"$RUNNER_TEMP/godot" --headless --path . --import'
+
+      - name: Smoke test
+        run: '"$RUNNER_TEMP/godot" --headless --path . -s tests/smoke.gd -- --seed=7'
+
+      - name: Export for the web
+        run: |
+          mkdir -p build/web
+          "$RUNNER_TEMP/godot" --headless --path . --export-release "Web" build/web/index.html
+          test -s build/web/index.wasm
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

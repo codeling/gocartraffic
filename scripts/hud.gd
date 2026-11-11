@@ -23,7 +23,7 @@ A town is growing on this map. People want to drive to work, to the shops and ou
 Drivers avoid congested roads if you give them an alternative.
 
 [b]Camera[/b]  WASD / arrows or middle-mouse drag to pan, wheel to zoom, Q / E to rotate.
-[b]Time[/b]  Space pauses, + and - change speed.   [b]F1[/b] shows this help again."""
+[b]Time[/b]  Space pauses, + and - change speed.   [b]F1[/b] or [b]H[/b] shows this help again."""
 
 var g
 var labels := {}
@@ -121,7 +121,7 @@ func setup(game) -> void:
 		speed_buttons.append(b)
 	overlay_btn = _button("Traffic view (T)", g.toggle_overlay, true)
 	bar.add_child(overlay_btn)
-	bar.add_child(_button("Help (F1)", toggle_help))
+	bar.add_child(_button("Help (H)", toggle_help))
 	bar.add_child(_button("New map", g.new_map))
 
 	# ---- middle row
