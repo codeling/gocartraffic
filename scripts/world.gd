@@ -115,6 +115,14 @@ func generate(s: int) -> void:
 				h = 0.14 + hill * f + 0.03 * n1.get_noise_2d(cx2 * 11.0, cy2 * 11.0)
 			corner[cy2 * (W + 1) + cx2] = h
 
+	_classify()
+	_place_districts()
+
+
+func _classify() -> void:
+	shore.fill(0)
+	steep.fill(0)
+	flat.fill(0)
 	for ty2 in H:
 		for tx2 in W:
 			var i := ty2 * W + tx2
@@ -132,8 +140,6 @@ func generate(s: int) -> void:
 				steep[i] = 1
 			elif hi2 - lo2 <= Cfg.FLAT_LIMIT:
 				flat[i] = 1
-
-	_place_districts()
 
 
 func _compute_water_distance() -> void:
@@ -242,3 +248,44 @@ func can_build(x: int, y: int) -> bool:
 	if x < 1 or y < 1 or x >= W - 1 or y >= H - 1:
 		return false
 	return flat[y * W + x] == 1
+
+
+func dry_line(ax: float, ay: float, bx: float, by: float) -> bool:
+	var n := int(maxf(absf(bx - ax), absf(by - ay)) * 2.0) + 1
+	for k in n + 1:
+		var t := float(k) / n
+		var x := int(lerpf(ax, bx, t))
+		var y := int(lerpf(ay, by, t))
+		if in_bounds(x, y) and water[y * W + x] == 1:
+			return false
+	return true
+
+
+func to_save() -> Dictionary:
+	var ds := []
+	for d in districts:
+		ds.append([d.type, d.pos.x, d.pos.y])
+	return {
+		"seed": seed_value,
+		"corner": Marshalls.raw_to_base64(corner.to_byte_array()),
+		"water": Marshalls.raw_to_base64(water),
+		"river_x": Array(river_x),
+		"districts": ds,
+	}
+
+
+func from_save(d: Dictionary) -> void:
+	seed_value = int(d.seed)
+	rng.seed = seed_value
+	corner = Marshalls.base64_to_raw(d.corner).to_float32_array()
+	water = Marshalls.base64_to_raw(d.water)
+	shore.resize(W * H)
+	steep.resize(W * H)
+	flat.resize(W * H)
+	wdist.resize(W * H)
+	river_x = PackedFloat32Array(d.river_x)
+	_compute_water_distance()
+	_classify()
+	districts.clear()
+	for e in d.districts:
+		districts.append({"type": int(e[0]), "pos": Vector2i(int(e[1]), int(e[2])), "count": 0})

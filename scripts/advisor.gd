@@ -17,6 +17,8 @@ const TEXT := {
 		"Vehicles crawl on the steep grade and everybody behind them has to slow down too. Fixes: add a lane on the hill or route the road around it."],
 	"bus": ["Bus stopping in the lane",
 		"While the bus loads passengers the cars behind it wait. Fix: give this road a second lane so cars can pass - the bus still removes far more cars than it delays."],
+	"bike": ["Cyclists sharing the lane",
+		"Bikes ride at half the speed of cars, and on a road without bike lanes everybody behind them has to slow down. Fixes: add bike lanes to this road (tool 5), build a separate cycle path (tool 4), or add a second car lane so cars can pass."],
 	"spill": ["Queue spilling back",
 		"This is not the cause: the road ahead is full, so cars cannot leave this section. Follow the red line in the direction of travel to the front of the queue and fix it there."],
 	"slow": ["Dense traffic",
@@ -33,6 +35,9 @@ func diagnose(g, l) -> Dictionary:
 		nxt = null
 	if l.bus_ema > 0.2 and l.bus_ema >= l.sig_ema and l.bus_ema >= l.spill_ema:
 		kind = "bus"
+		root = true
+	elif l.bike_ema > 0.3 and l.bike_ema >= l.sig_ema and l.bike_ema >= l.spill_ema:
+		kind = "bike"
 		root = true
 	elif l.spill_ema > 0.12 and l.spill_ema >= l.sig_ema:
 		if nxt != null and g.traffic.congestion(nxt) > 0.5 and nxt.occ_ema > 0.3:
@@ -104,3 +109,46 @@ func worst_link(g, i: int):
 					best_c = c
 					best = l
 	return best
+
+
+const BUS_TIPS := """[b]Laying out bus lines[/b]
+- People walk at most 5 tiles (100 m) to a stop: put stops in the middle of housing areas and right next to factories, offices, shops and venues.
+- A line serves every stop in both directions, so one line along a corridor is enough - do not build a second one for the way back.
+- Keep lines fairly straight. Every detour costs all passengers time and they are only paid for if they arrive within the time limit.
+- Let lines cross at a shared stop: passengers change there (up to two changes).
+- Waiting time is the round trip divided by the number of buses. Long line = more buses needed.
+- A stopped bus blocks its lane. Give busy bus roads a second lane.
+- Check a line's numbers by clicking its name: an empty line is in the wrong place, a full one needs more buses."""
+
+
+## Concrete hints for one bus line, based on how it is doing.
+func line_advice(g, l) -> Array:
+	var tr = g.transit
+	var out := []
+	if not l.ok:
+		out.append("Some of its stops are not connected by road, so no bus can run.")
+		return out
+	if tr.bus_count(l) == 0:
+		out.append("It has no bus. Add one with the + button.")
+		return out
+	var load: float = l.load_sum / maxf(1.0, l.load_n) / Cfg.BUS_CAP
+	if l.load_n >= 12 and load < 0.06:
+		out.append("Buses run almost empty. Few people live or work within 5 tiles of its stops, or the stops do not link homes with jobs and shops. Move or add stops.")
+	if load > 0.75 or l.left_behind > 0 or tr.waiting_for(l) > 25:
+		out.append("Buses are overcrowded and leave people behind. Add buses.")
+	if l.wait_n > 5 and l.wait_sum / l.wait_n > 240.0:
+		out.append("Passengers wait %s on average. Add a bus or split the line into two shorter ones." % Cfg.fmt_time(l.wait_sum / l.wait_n))
+	if tr.lines.size() > 1:
+		var shared := false
+		for s in l.stops:
+			if tr.lines_at.get(s, []).size() > 1:
+				shared = true
+		if not shared:
+			out.append("It shares no stop with another line, so nobody can change between them.")
+	for k in l.seg.size():
+		if l.seg[k] >= 0.0 and l.seg[k] < 3.0:
+			out.append("Two of its stops are less than 60 m apart - every extra stop slows the bus down.")
+			break
+	if out.is_empty():
+		out.append("Running fine.")
+	return out
