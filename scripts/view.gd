@@ -527,7 +527,100 @@ func _mat(col: Color, metallic: float = 0.0, rough: float = 0.9) -> StandardMate
 	return _mats[key]
 
 
+## While a building is assembled, its parts are collected here (one MB per
+## surface finish) and turned into a single mesh. Hundreds of buildings made of
+## separate nodes add up to thousands of draw calls, and beyond roughly 2500 the
+## web renderer stops drawing the 3D scene altogether.
+var _acc := {}
+var _acc_on := false
+
+
+func _acc_mb(metallic: float, rough: float) -> MB:
+	var key := "%.1f/%.1f" % [metallic, rough]
+	if not _acc.has(key):
+		_acc[key] = [MB.new(), metallic, rough]
+	return _acc[key][0]
+
+
+func _acc_cyl(top: float, bottom: float, height: float, pos: Vector3, col: Color) -> void:
+	var mb := _acc_mb(0.0, 0.9)
+	var n := 12
+	var yt := pos.y + height * 0.5
+	var yb := pos.y - height * 0.5
+	for k in n:
+		var a0 := TAU * k / n
+		var a1 := TAU * (k + 1) / n
+		var t0 := pos + Vector3(cos(a0) * top, yt - pos.y, sin(a0) * top)
+		var t1 := pos + Vector3(cos(a1) * top, yt - pos.y, sin(a1) * top)
+		var b0 := pos + Vector3(cos(a0) * bottom, yb - pos.y, sin(a0) * bottom)
+		var b1 := pos + Vector3(cos(a1) * bottom, yb - pos.y, sin(a1) * bottom)
+		mb.quad(b0, b1, t1, t0, col)
+		if top > 0.0:
+			mb.tri(pos + Vector3(0, yt - pos.y, 0), t0, t1, col)
+		if bottom > 0.0:
+			mb.tri(pos + Vector3(0, yb - pos.y, 0), b1, b0, col)
+
+
+## Triangular prism (the roof): triangle in the XY plane, extruded along Z.
+func _acc_prism(size: Vector3, pos: Vector3, col: Color) -> void:
+	var mb := _acc_mb(0.0, 0.9)
+	var hx := size.x * 0.5
+	var hy := size.y * 0.5
+	var hz := size.z * 0.5
+	var l0 := pos + Vector3(-hx, -hy, -hz)
+	var r0 := pos + Vector3(hx, -hy, -hz)
+	var a0 := pos + Vector3(0, hy, -hz)
+	var l1 := pos + Vector3(-hx, -hy, hz)
+	var r1 := pos + Vector3(hx, -hy, hz)
+	var a1 := pos + Vector3(0, hy, hz)
+	mb.tri(l0, r0, a0, col)
+	mb.tri(l1, a1, r1, col)
+	mb.quad(l0, a0, a1, l1, col)
+	mb.quad(r0, r1, a1, a0, col)
+	mb.quad(l0, l1, r1, r0, col)
+
+
+func _acc_finish(parent: Node3D) -> void:
+	var m := ArrayMesh.new()
+	var mats: Array[Material] = []
+	for key in _acc:
+		var e: Array = _acc[key]
+		var mb: MB = e[0]
+		if mb.v.is_empty():
+			continue
+		var arr := []
+		arr.resize(Mesh.ARRAY_MAX)
+		arr[Mesh.ARRAY_VERTEX] = mb.v
+		arr[Mesh.ARRAY_NORMAL] = mb.n
+		arr[Mesh.ARRAY_COLOR] = mb.c
+		m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
+		mats.append(_part_mat(e[1], e[2]))
+	for i in mats.size():
+		m.surface_set_material(i, mats[i])
+	var mi := MeshInstance3D.new()
+	mi.mesh = m
+	parent.add_child(mi)
+	_acc.clear()
+	_acc_on = false
+
+
+func _part_mat(metallic: float, rough: float) -> StandardMaterial3D:
+	var key := "pm%.1f/%.1f" % [metallic, rough]
+	if not _mats.has(key):
+		var mt := StandardMaterial3D.new()
+		mt.vertex_color_use_as_albedo = true
+		mt.vertex_color_is_srgb = true
+		mt.metallic = metallic
+		mt.roughness = rough
+		mt.cull_mode = BaseMaterial3D.CULL_DISABLED
+		_mats[key] = mt
+	return _mats[key]
+
+
 func _box(parent: Node3D, size: Vector3, pos: Vector3, col: Color, metallic: float = 0.0, rough: float = 0.9) -> MeshInstance3D:
+	if _acc_on:
+		_acc_mb(metallic, rough).box(pos, size, col)
+		return null
 	var key := "b%s" % size
 	if not _meshes.has(key):
 		var bm := BoxMesh.new()
@@ -537,6 +630,9 @@ func _box(parent: Node3D, size: Vector3, pos: Vector3, col: Color, metallic: flo
 
 
 func _cyl(parent: Node3D, top: float, bottom: float, height: float, pos: Vector3, col: Color) -> MeshInstance3D:
+	if _acc_on:
+		_acc_cyl(top, bottom, height, pos, col)
+		return null
 	var key := "c%.2f/%.2f/%.2f" % [top, bottom, height]
 	if not _meshes.has(key):
 		var cm := CylinderMesh.new()
@@ -566,6 +662,7 @@ func add_building(b, animate: bool = true) -> void:
 	body.rotation.y = ((b.id * 7 + b.x) % 4) * PI * 0.5
 	root.add_child(body)
 	var r := _hash(b.id * 31 + 7)
+	_acc_on = true
 	_box(root, Vector3(0.92, 0.5, 0.92), Vector3(0, -0.21, 0), Color(0.5, 0.5, 0.47))
 	match b.type:
 		Cfg.HOUSE when b.apt:
@@ -579,11 +676,7 @@ func add_building(b, animate: bool = true) -> void:
 			var walls: Array[Color] = [Color(0.95, 0.9, 0.78), Color(0.9, 0.82, 0.7), Color(0.85, 0.88, 0.9), Color(0.96, 0.93, 0.86)]
 			var roofs: Array[Color] = [Color(0.7, 0.28, 0.2), Color(0.55, 0.25, 0.2), Color(0.35, 0.36, 0.42)]
 			_box(body, Vector3(0.5, 0.3, 0.44), Vector3(0, 0.2, 0), walls[int(r * 3.99)])
-			if not _meshes.has("roof"):
-				var pm := PrismMesh.new()
-				pm.size = Vector3(0.58, 0.2, 0.5)
-				_meshes["roof"] = pm
-			_part(body, _meshes["roof"], Vector3(0, 0.45, 0), roofs[b.id % 3], 0.0, 0.9)
+			_acc_prism(Vector3(0.58, 0.2, 0.5), Vector3(0, 0.45, 0), roofs[b.id % 3])
 			_box(body, Vector3(0.06, 0.14, 0.06), Vector3(0.14, 0.5, 0.1), Color(0.5, 0.3, 0.25))
 		Cfg.FACTORY:
 			_box(body, Vector3(0.66, 0.3, 0.56), Vector3(0, 0.2, 0), Color(0.62, 0.64, 0.68))
@@ -607,6 +700,7 @@ func add_building(b, animate: bool = true) -> void:
 			_box(body, Vector3(0.52, 1.0, 0.52), Vector3(0, hgt - 0.45, 0), Color(0.42, 0.6, 0.8), 0.5, 0.25)
 			_box(body, Vector3(0.56, 0.05, 0.56), Vector3(0, hgt + 0.07, 0), Color(0.3, 0.33, 0.4))
 			_box(body, Vector3(0.56, 0.05, 0.56), Vector3(0, 0.08, 0), Color(0.3, 0.33, 0.4))
+	_acc_finish(body)
 	var mark := Label3D.new()
 	mark.text = "!"
 	mark.font_size = 96
