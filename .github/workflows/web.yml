@@ -6,10 +6,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Least privilege: the build only reads the repo. Only the deploy job gets the
+# Pages and OIDC permissions it needs.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages-${{ github.ref }}
@@ -18,6 +18,9 @@ concurrency:
 env:
   GODOT_VERSION: 4.3
   GODOT_RELEASE: https://github.com/godotengine/godot/releases/download/4.3-stable
+  # SHA-512 of the downloads, from the release's SHA512-SUMS.txt. Update together with GODOT_VERSION.
+  GODOT_SHA512: fd52bb4ba8acc30ca5accd1c566d470ad7282f891ccc0995dfafabcf92bcf76280ce182bf9d80ebd885f3ed2165d01e1fc3f2928436b15498dfbd98656c2a45a
+  TEMPLATES_SHA512: 476366caf0fd45a8f24136cf9cf1dc0bc2b96f7c82d53e5f82200b55aefd07b286d283fd6f1ce29e0de70648c5a51d3b12f96c6d4fafd4e8c4878ecda6406d6a
 
 jobs:
   build:
@@ -28,9 +31,11 @@ jobs:
       - name: Install Godot and the web export template
         run: |
           curl -sSfL -o godot.zip "$GODOT_RELEASE/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          echo "$GODOT_SHA512  godot.zip" | sha512sum -c -
           unzip -q godot.zip -d "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/Godot_v${GODOT_VERSION}-stable_linux.x86_64" "$RUNNER_TEMP/godot"
           curl -sSfL -o templates.tpz "$GODOT_RELEASE/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          echo "$TEMPLATES_SHA512  templates.tpz" | sha512sum -c -
           dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
           mkdir -p "$dest"
           unzip -q -j templates.tpz 'templates/web_nothreads_*' 'templates/version.txt' -d "$dest"
@@ -48,7 +53,7 @@ jobs:
           "$RUNNER_TEMP/godot" --headless --path . --export-release "Web" build/web/index.html
           test -s build/web/index.wasm
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: build/web
 
@@ -56,9 +61,12 @@ jobs:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

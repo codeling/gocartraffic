@@ -299,9 +299,41 @@ func _check_loaded() -> void:
 	check(g.credits == expect.credits and g.day == expect.day and g.delivered == expect.delivered, "credits, day and score restored")
 	check(g.transit.lines.size() == expect.lines and g.transit.stops.size() == expect.stops, "bus lines and stops restored")
 	check(g.world.corner[1234] == expect.corner, "terrain restored exactly")
+	_check_bad_saves()
 	var moved0: int = g.delivered
 	for step in int(g.day_len / 0.3):
 		g.sim_step(0.3)
 	check(g.delivered > moved0, "the loaded town keeps running (%d more people moved)" % (g.delivered - moved0))
 	g.hud.refresh()
 	g.view.update_vehicles(0.016)
+
+
+## Edited or crafted save files must be rejected before they touch the game.
+func _check_bad_saves() -> void:
+	var SaveCheck = load("res://scripts/save_check.gd")
+	var good: Dictionary = JSON.parse_string(saved_text)
+	check(SaveCheck.check(good) == "", "a real save passes validation")
+	var cases := {
+		"huge credits": func(d): d.credits = 1.0e30,
+		"negative day": func(d): d.day = -5,
+		"day length zero": func(d): d.settings.day_len = 0,
+		"slider out of range": func(d): d.settings.compact = 9.0,
+		"tile index out of map": func(d): d.roads[0][0] = 999999,
+		"too many lanes": func(d): d.roads[0][1] = 99,
+		"duplicate road tile": func(d): d.roads.append(d.roads[0].duplicate()),
+		"building type out of range": func(d): d.city.buildings[0].t = 77,
+		"building off the map": func(d): d.city.buildings[0].x = 5000,
+		"absurd residents": func(d): d.city.buildings[0].res = 1000000,
+		"bad car colour": func(d): d.city.buildings[0].cars = ["zzzzzz"],
+		"job index out of range": func(d): d.city.buildings[0].jobs = [999999],
+		"short terrain": func(d): d.world.corner = "AAAA",
+		"short water map": func(d): d.world.water = "AAAA",
+		"stop off the road": func(d): d.transit.stops = [0],
+		"bus flood": func(d): d.transit.lines.append({"id": 1, "stops": [], "buses": 100000, "carried": 0, "board": {}}),
+		"wrong type": func(d): d.stats = "oops",
+		"missing section": func(d): d.erase("city"),
+	}
+	for name in cases:
+		var d: Dictionary = JSON.parse_string(saved_text)
+		cases[name].call(d)
+		check(SaveCheck.check(d) != "", "rejects: " + name)
