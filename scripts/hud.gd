@@ -3,6 +3,9 @@ extends CanvasLayer
 
 const Cfg = preload("res://scripts/cfg.gd")
 const Advisor = preload("res://scripts/advisor.gd")
+const Alerts = preload("res://scripts/alerts.gd")
+const MiniMap = preload("res://scripts/minimap.gd")
+const Pointers = preload("res://scripts/pointers.gd")
 
 const HELP := """[font_size=20][b]GoCarTraffic[/b][/font_size]
 A town is growing on this map. People want to get to work, to the shops and out in the evening. [b]Every trip that arrives within its time limit earns credits[/b] (2.5 times what the trip takes by car on empty roads). Late trips and trips that cannot be made earn nothing. Everything is to scale: one tile is 20 m and cars drive at most 50 km/h.
@@ -24,8 +27,10 @@ Short trips are walked (up to 10 tiles), medium ones cycled (up to 30 tiles, far
 - [b]Spillback[/b]: a full road blocks the junction behind it - the red line is the symptom, the cause is at its front.
 - [b]Single crossings[/b], [b]rush hours[/b], [b]cyclists and buses in the lane[/b], [b]full car parks[/b].
 
-[b]Controls[/b]  WASD / arrows or middle mouse: move.  Wheel: zoom.  Q / E: rotate.  Space: pause.  + / -: speed.
-T: traffic view (jams, then volume).  G: statistics.  M or Esc: menu (save, load, new game).  H: this help."""
+[b]Controls[/b]  WASD / arrows: move.  Drag with the right or middle mouse button, or hold Shift and drag with the left one: move (the mini-map in the corner works too).  Wheel: zoom.  Q / E: rotate.  C: centre the view on the town (twice: whole map).
+Space: pause (the game starts paused).  + / -: speed.  T: traffic view (jams, then volume).  G: statistics.  L: notifications and problem history.  M or Esc: menu (save, load, new game); Esc closes it again.  H: this help.
+
+[b]Problems[/b]  Houses without a road, people who cannot travel and traffic jams are announced at the top of the screen, stay in the notification log (L) and are pointed out by arrows at the screen edge when they are out of view. By default the game pauses when a new problem appears; switch that off in the log."""
 
 var g
 var labels := {}
@@ -42,8 +47,22 @@ var lines_box: VBoxContainer
 var lines_sig := "?"
 var line_labels := {}
 var hint: Label
-var toast_lbl: Label
-var toast_tween: Tween
+var toast_box: VBoxContainer
+var toasts: Array = []       # {node, age, hold, fade}
+var paused_lbl: Label
+var cost_tag: PanelContainer
+var cost_lbl: Label
+var cost_text := ""
+var minimap
+var minimap_panel: PanelContainer
+var pointers
+var log_btn: Button
+var log_panel: PanelContainer
+var log_open_box: VBoxContainer
+var log_hist_box: VBoxContainer
+var log_ver := -1
+var pause_check: CheckButton
+var menu_pause_check: CheckBox
 var help: PanelContainer
 var menu: PanelContainer
 var stats: PanelContainer
@@ -122,6 +141,9 @@ func _rich(width: float, font: int) -> RichTextLabel:
 
 func setup(game) -> void:
 	g = game
+	pointers = Pointers.new()
+	add_child(pointers)
+	pointers.setup(g)
 	var root := MarginContainer.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -234,18 +256,66 @@ func setup(game) -> void:
 	hint.add_theme_font_size_override("font_size", 14)
 	hp.add_child(hint)
 
-	# ---- toast
-	toast_lbl = Label.new()
-	toast_lbl.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	toast_lbl.position.y = 86
-	toast_lbl.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	toast_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	toast_lbl.add_theme_font_size_override("font_size", 20)
-	toast_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0))
-	toast_lbl.add_theme_constant_override("outline_size", 6)
-	toast_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	toast_lbl.modulate.a = 0.0
-	add_child(toast_lbl)
+	# ---- notifications: a stack of lines that fade out slowly
+	paused_lbl = Label.new()
+	paused_lbl.text = "PAUSED  -  press Space or pick a speed to start"
+	paused_lbl.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	paused_lbl.position.y = 80
+	paused_lbl.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	paused_lbl.add_theme_font_size_override("font_size", 16)
+	paused_lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.45))
+	paused_lbl.add_theme_color_override("font_outline_color", Color(0, 0, 0))
+	paused_lbl.add_theme_constant_override("outline_size", 5)
+	paused_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(paused_lbl)
+	toast_box = VBoxContainer.new()
+	toast_box.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	toast_box.position.y = 110
+	toast_box.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	toast_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	toast_box.add_theme_constant_override("separation", 4)
+	add_child(toast_box)
+
+	# ---- price tag next to the cursor
+	cost_tag = _panel(0.93)
+	cost_tag.visible = false
+	cost_tag.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cost_lbl = Label.new()
+	cost_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	cost_lbl.custom_minimum_size = Vector2(280, 0)
+	cost_lbl.add_theme_font_size_override("font_size", 13)
+	cost_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cost_tag.add_child(cost_lbl)
+	add_child(cost_tag)
+
+	# ---- mini-map
+	minimap_panel = _panel()
+	var mv := VBoxContainer.new()
+	mv.add_theme_constant_override("separation", 4)
+	minimap_panel.add_child(mv)
+	minimap = MiniMap.new()
+	mv.add_child(minimap)
+	minimap.setup(g)
+	var mrow := HBoxContainer.new()
+	mrow.add_theme_constant_override("separation", 4)
+	mv.add_child(mrow)
+	var center_btn := _button("Centre (C)", g.reset_view)
+	center_btn.tooltip_text = "Back to the town with the default angle and zoom. Press again to see the whole map."
+	center_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mrow.add_child(center_btn)
+	log_btn = _button("Log (L)", toggle_log)
+	log_btn.tooltip_text = "All notifications and the problems that are open right now."
+	log_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mrow.add_child(log_btn)
+	minimap_panel.anchor_left = 1.0
+	minimap_panel.anchor_right = 1.0
+	minimap_panel.anchor_top = 1.0
+	minimap_panel.anchor_bottom = 1.0
+	minimap_panel.offset_right = -8.0
+	minimap_panel.offset_bottom = -52.0
+	minimap_panel.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	minimap_panel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	add_child(minimap_panel)
 
 	# ---- statistics
 	stats = _panel(0.94)
@@ -263,6 +333,7 @@ func setup(game) -> void:
 	sv.add_child(sc)
 
 	_build_help()
+	_build_log()
 	_build_menu()
 
 	file_dialog = FileDialog.new()
@@ -348,6 +419,13 @@ func _build_menu() -> void:
 	load_btn.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
 	v.add_child(_small("Saves keep the map, roads, buildings, bus lines and credits. Vehicles on the road are not stored: after loading everybody starts from home.", Color(0.6, 0.66, 0.72)))
 
+	menu_pause_check = CheckBox.new()
+	menu_pause_check.text = "Pause the game when a new problem appears"
+	menu_pause_check.focus_mode = Control.FOCUS_NONE
+	menu_pause_check.button_pressed = Alerts.pause_enabled
+	menu_pause_check.toggled.connect(_on_pause_toggled)
+	v.add_child(menu_pause_check)
+
 	v.add_child(HSeparator.new())
 	v.add_child(_heading("New game"))
 	var row := HBoxContainer.new()
@@ -393,26 +471,201 @@ func show_menu(on: bool) -> void:
 	resume_row.visible = g.started
 	if on:
 		help.visible = false
+		log_panel.visible = false
+		set_cost_tag("")
 
 
 func toggle_help() -> void:
 	help.visible = not help.visible
 
 
+func _on_pause_toggled(on: bool) -> void:
+	Alerts.pause_enabled = on
+	if pause_check != null:
+		pause_check.set_pressed_no_signal(on)
+	if menu_pause_check != null:
+		menu_pause_check.set_pressed_no_signal(on)
+
+
+# ------------------------------------------------------------ notifications
+
+func _build_log() -> void:
+	log_panel = _panel(0.97)
+	log_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	log_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	log_panel.grow_vertical = Control.GROW_DIRECTION_BOTH
+	log_panel.visible = false
+	add_child(log_panel)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	log_panel.add_child(v)
+	var title := Label.new()
+	title.text = "Notifications and problems"
+	title.add_theme_font_size_override("font_size", 20)
+	v.add_child(title)
+	pause_check = CheckButton.new()
+	pause_check.text = "Pause the game when a new problem appears"
+	pause_check.focus_mode = Control.FOCUS_NONE
+	pause_check.button_pressed = Alerts.pause_enabled
+	pause_check.toggled.connect(_on_pause_toggled)
+	v.add_child(pause_check)
+	v.add_child(_heading("Open problems"))
+	log_open_box = VBoxContainer.new()
+	v.add_child(log_open_box)
+	v.add_child(HSeparator.new())
+	v.add_child(_heading("History, newest first"))
+	var sc := ScrollContainer.new()
+	sc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	sc.custom_minimum_size = Vector2(620, 250)
+	v.add_child(sc)
+	log_hist_box = VBoxContainer.new()
+	log_hist_box.add_theme_constant_override("separation", 3)
+	log_hist_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sc.add_child(log_hist_box)
+	var close := _button("Close", toggle_log)
+	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	close.custom_minimum_size = Vector2(160, 34)
+	v.add_child(close)
+
+
+func toggle_log() -> void:
+	log_panel.visible = not log_panel.visible
+	if log_panel.visible:
+		help.visible = false
+		g.alerts.mark_read()
+		_rebuild_log()
+
+
+func _level_color(level: int) -> Color:
+	return [Color(0.82, 0.88, 0.95), Color(1.0, 0.9, 0.5), Color(1.0, 0.62, 0.45)][level]
+
+
+func _log_row(box: VBoxContainer, stamp: String, text: String, col: Color, tile: int, kind: String) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	var st := _small(stamp)
+	st.custom_minimum_size = Vector2(78, 0)
+	row.add_child(st)
+	var l := Label.new()
+	l.text = text
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	l.custom_minimum_size = Vector2(420, 0)
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", col)
+	row.add_child(l)
+	if tile >= 0:
+		var b := _button("Show", g.goto_tile.bind(tile, kind))
+		b.tooltip_text = "Move the view there"
+		row.add_child(b)
+	box.add_child(row)
+
+
+func _rebuild_log() -> void:
+	log_ver = g.alerts.version
+	for c in log_open_box.get_children():
+		c.queue_free()
+	for c in log_hist_box.get_children():
+		c.queue_free()
+	if g.alerts.open.is_empty():
+		log_open_box.add_child(_small("None. Everybody has a road and can get where they want to go.", Color(0.6, 0.85, 0.6)))
+	for p in g.alerts.open:
+		_log_row(log_open_box, p.short, p.text, Pointers.COLORS.get(p.kind, Color.WHITE), p.tile, p.kind)
+	var hist: Array = g.alerts.history
+	for k in range(hist.size() - 1, -1, -1):
+		var e: Dictionary = hist[k]
+		_log_row(log_hist_box, "Day %d %s" % [e.day, e.clock], e.text, _level_color(e.level), e.tile, e.kind)
+
+
+func _toast_style(level: int) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.08, 0.1, 0.13, 0.88)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 12
+	sb.content_margin_right = 12
+	sb.content_margin_top = 4
+	sb.content_margin_bottom = 4
+	if level > 0:
+		sb.border_color = _level_color(level)
+		sb.set_border_width_all(2)
+	return sb
+
+
+## One line of the notification stack. It stays for a while (longer for
+## problems), then fades out slowly. Everything also goes into the log.
+func show_toast(e: Dictionary) -> void:
+	var lvl: int = e.level
+	for k in range(toasts.size() - 1, -1, -1):
+		if toasts[k].node.text == e.text:
+			toasts[k].node.queue_free()
+			toasts.remove_at(k)
+	var b := Button.new()
+	b.text = e.text
+	b.focus_mode = Control.FOCUS_NONE
+	b.add_theme_font_size_override("font_size", 16)
+	b.add_theme_color_override("font_color", _level_color(lvl))
+	b.add_theme_color_override("font_hover_color", Color.WHITE)
+	for st in ["normal", "hover", "pressed", "focus"]:
+		b.add_theme_stylebox_override(st, _toast_style(lvl))
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	if e.tile >= 0:
+		b.tooltip_text = "Click to jump there"
+		b.pressed.connect(g.goto_tile.bind(e.tile, e.kind))
+	else:
+		b.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	toast_box.add_child(b)
+	toasts.append({"node": b, "age": 0.0, "hold": Cfg.TOAST_HOLD[lvl], "fade": Cfg.TOAST_FADE[lvl]})
+	while toasts.size() > 5:
+		toasts[0].node.queue_free()
+		toasts.remove_at(0)
+
+
+## Plain message (build errors, daily summary, ...): goes through the same
+## notification system.
+func toast(text: String) -> void:
+	g.alerts.notify(text)
+
+
+func set_cost_tag(text: String) -> void:
+	cost_text = text
+	_update_cost_tag()
+
+
+## The tag follows the cursor, but only while the cursor is over the map.
+func _update_cost_tag() -> void:
+	var on_map: bool = get_viewport().get_mouse_position().distance_to(g.last_map_mouse) <= 4.0 and not menu.visible
+	var want: bool = cost_text != "" and on_map
+	if want and cost_lbl.text != cost_text:
+		cost_lbl.text = cost_text
+		cost_tag.reset_size()
+	cost_tag.visible = want
+	if want:
+		var vp := get_viewport().get_visible_rect().size
+		var p := get_viewport().get_mouse_position() + Vector2(22, 26)
+		p.x = clampf(p.x, 4.0, maxf(4.0, vp.x - cost_tag.size.x - 4.0))
+		p.y = clampf(p.y, 4.0, maxf(4.0, vp.y - cost_tag.size.y - 4.0))
+		cost_tag.position = p
+
+
+func _process(delta: float) -> void:
+	var k := 0
+	while k < toasts.size():
+		var t: Dictionary = toasts[k]
+		if not t.node.is_hovered():
+			t.age += delta
+		var over: float = t.age - t.hold
+		if over > t.fade:
+			t.node.queue_free()
+			toasts.remove_at(k)
+			continue
+		t.node.modulate.a = 1.0 if over <= 0.0 else 1.0 - over / t.fade
+		k += 1
+	_update_cost_tag()
+
+
 func toggle_stats() -> void:
 	stats.visible = not stats.visible
 	if stats.visible:
 		stats_text.text = g.stats_text()
-
-
-func toast(text: String) -> void:
-	toast_lbl.text = text
-	if toast_tween != null:
-		toast_tween.kill()
-	toast_lbl.modulate.a = 1.0
-	toast_tween = create_tween()
-	toast_tween.tween_interval(3.0)
-	toast_tween.tween_property(toast_lbl, "modulate:a", 0.0, 0.8)
 
 
 func set_hint(text: String) -> void:
@@ -493,8 +746,14 @@ func refresh() -> void:
 	_refresh_lines()
 	if stats.visible:
 		stats_text.text = g.stats_text()
-	var room: float = get_viewport().get_visible_rect().size.y - 170.0
-	right_scroll.custom_minimum_size.y = clampf(right_box.get_combined_minimum_size().y, 60.0, room)
+	paused_lbl.visible = g.started and g.speed_idx == 0 and not menu.visible
+	log_btn.text = "Log (L)" if g.alerts.unread == 0 else "Log (L) - %d new" % g.alerts.unread
+	if log_panel.visible:
+		g.alerts.mark_read()
+		if log_ver != g.alerts.version:
+			_rebuild_log()
+	var room: float = get_viewport().get_visible_rect().size.y - 170.0 - minimap_panel.get_combined_minimum_size().y - 12.0
+	right_scroll.custom_minimum_size.y = clampf(right_box.get_combined_minimum_size().y, 60.0, maxf(room, 60.0))
 
 
 func _refresh_advisor() -> void:

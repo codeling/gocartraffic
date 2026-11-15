@@ -45,12 +45,14 @@ godot --headless --path . --export-release "Web" build/web/index.html
 
 The start screen lets you choose the map, how new buildings spread (close to
 the town or anywhere, zoned by type or mixed) and the length of a day. `M`
-or `Esc` brings the menu back for **saving and loading**.
+or `Esc` brings the menu back for **saving and loading**; `Esc` closes it again.
+**The game starts paused**: look around, plan your first streets, then press
+`Space` or pick a speed.
 
 | Key | Tool | |
 |---|---|---|
 | `1` | Inspect | Click a building, road, bus stop or bus line to see what is happening there |
-| `2` | Road | Drag to draw a street with one lane per direction (10 credits per tile, steep hills 30, bridges 60). Ends join neighbouring roads automatically; if buildings block the bend, the other bend is used |
+| `2` | Road | Drag to draw a street with one lane per direction (10 credits per tile, steep hills 30, bridges 60). The tag next to the cursor says why the hovered tile costs what it does, and the hint line at the bottom breaks the total down. Neighbouring roads are always joined – also an old dead end that the new street merely passes; if buildings block the bend, the other bend is used |
 | `3` | Add lane | Drag along a road to add a lane in both directions (up to 3 each way) |
 | `4` | Cycle path | A separate path for bikes only (3 per tile) |
 | `5` | Bike lanes | Add bike lanes to an existing road (1 per tile) |
@@ -60,8 +62,33 @@ or `Esc` brings the menu back for **saving and loading**.
 
 `Ctrl+Z` undo (free for 15 s after building) · `T` traffic view (jams, then
 volume) · `G` statistics · `Space` pause · `+` / `-` game speed · `H` help ·
-`Ctrl+S` / `Ctrl+O` save / load · `WASD` / arrows / middle-mouse drag to pan ·
-mouse wheel to zoom · `Q` / `E` to rotate.
+`Ctrl+S` / `Ctrl+O` save / load · `WASD` / arrows to pan, or drag with the
+right or middle mouse button, or hold `Shift` and drag with the left one (laptops
+have no middle button) · mouse wheel to zoom · `Q` / `E` to rotate · `C` centres
+the view on the town (press twice for the whole map) · `L` notification log.
+
+The **mini-map** in the bottom right corner shows the whole map with the part you
+are looking at; click or drag in it to move the view.
+
+### Problems and notifications
+
+Three kinds of problem are watched: a building without a road, people who
+cannot travel (no car, no bus, no route) and traffic jams. A new one is announced
+at the top of the screen – problems stay longer than ordinary messages and fade
+out slowly – and **the game pauses** (switch that off in the log or the menu; it
+pauses at most once per 15 seconds of play). Everything that was announced is kept
+in the **log** (`L`), which also lists the problems that are still open, each with a
+*Show* button. Problems outside the visible part of the map are pointed out by
+arrows at the edge of the screen; click one to jump there.
+
+### Where buildings appear
+
+Most new buildings appear next to existing ones; the *close to the town* slider
+sets how tightly. Now and then (about one in twenty at the *close* end, one in six
+at the *anywhere* end) a building appears far out, 11 to 24 tiles from the town,
+only where a road to it would still be affordable. Each such outlier is the
+nucleus of a new neighbourhood: buildings appear around it with extra priority
+until it has grown to ten buildings.
 
 ### Scale and time
 
@@ -77,10 +104,11 @@ hours of a big one. The start screen also offers 2-hour and true 24-hour days
 
 * Each household has 3–4 people but only 1–2 cars; later, apartment blocks
   with several households appear.
-* For every trip people choose how to travel: on foot (very likely up to
-  5 tiles, never beyond 10), by bike (likely up to 10 tiles, less so up to 20,
+* For every trip people choose how to travel: one in five goes by car whenever a
+  car is at home, even for a short distance; the rest walk (very likely up to
+  5 tiles, never beyond 10), cycle (likely up to 10 tiles, less so up to 20,
   never beyond 30 – and more often where the route has bike lanes or cycle
-  paths), otherwise by car or bus. Whoever finds no car at home takes the bus,
+  paths), or take the car or bus. Whoever finds no car at home takes the bus,
   cycles or walks if possible – otherwise the trip cannot be made (a `!`
   appears above the house; inspecting it shows the wanted route on the map).
 * A trip earns `people × (4 + distance / 2)` credits if it arrives within
@@ -136,6 +164,9 @@ scripts/traffic.gd   vehicle simulation (links, lanes, junction control)
 scripts/city.gd      buildings, households, daily schedules, trip rewards
 scripts/transit.gd   bus stops, lines, buses and passengers
 scripts/advisor.gd   jam diagnosis
+scripts/alerts.gd    problems, notification history, automatic pause
+scripts/minimap.gd   mini-map
+scripts/pointers.gd  edge-of-screen arrows towards problems
 scripts/view.gd      all 3D meshes (terrain, roads, buildings, vehicles)
 scripts/hud.gd       user interface
 scripts/game.gd      main loop, tools, input, statistics

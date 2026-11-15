@@ -9,6 +9,7 @@ const Traffic = preload("res://scripts/traffic.gd")
 const City = preload("res://scripts/city.gd")
 const Transit = preload("res://scripts/transit.gd")
 const Advisor = preload("res://scripts/advisor.gd")
+const Alerts = preload("res://scripts/alerts.gd")
 const View = preload("res://scripts/view.gd")
 const CameraRig = preload("res://scripts/camera_rig.gd")
 const Hud = preload("res://scripts/hud.gd")
@@ -28,6 +29,7 @@ var traffic
 var city
 var transit
 var advisor
+var alerts
 var view
 var rig
 var hud
@@ -52,6 +54,7 @@ var hover := -1
 var drag_start := -1
 var drag_path: Array = []
 var drag_kind := ""
+var last_map_mouse := Vector2(-1000.0, -1000.0)   # last mouse position seen over the map (not over a panel)
 var line_draft: Array = []
 var edit_line = null
 var overlay_mode := 0
@@ -95,6 +98,10 @@ func _ready() -> void:
 	cluster = float(b.get("cluster", cluster))
 	day_len = float(b.get("day_len", day_len))
 	started = bool(b.get("play", false))
+	# A new or loaded game waits for the player: plan first, then press Space.
+	if started:
+		speed_idx = 0
+		last_speed = 1
 	var s := int(b.get("seed", 0))
 	if s == 0:
 		s = randi() % 1000000 + 1
@@ -114,6 +121,8 @@ func _ready() -> void:
 	city.setup(self)
 	transit.city = city
 	advisor = Advisor.new()
+	alerts = Alerts.new()
+	alerts.setup(self)
 	traffic.on_arrive = city.on_vehicle_arrive
 	traffic.on_lost = _on_vehicle_lost
 	traffic.bus_arrive = transit.on_bus_arrive
@@ -136,17 +145,47 @@ func _ready() -> void:
 	get_window().files_dropped.connect(_on_files_dropped)
 	if not started:
 		hud.show_menu(true)
+	else:
+		alerts.notify("The game is paused. Look around and plan your first roads, then press Space or pick a speed.")
+
+
+func town_center() -> Vector3:
+	if city.buildings.is_empty():
+		return Vector3(W * 0.5, 0.0, H * 0.5)
+	var c := Vector2.ZERO
+	for b in city.buildings:
+		c += Vector2(b.x, b.y)
+	c /= city.buildings.size()
+	return Vector3(c.x + 0.5, 0.0, c.y + 0.5)
 
 
 func _frame_town() -> void:
 	if city.buildings.is_empty():
 		return
-	var c := Vector2.ZERO
-	for b in city.buildings:
-		c += Vector2(b.x, b.y)
-	c /= city.buildings.size()
-	rig.focus(Vector3(c.x, 0, c.y), 40.0)
+	rig.focus(town_center(), 40.0)
 	rig.dist = 40.0
+
+
+## Centre on the town with the default angle and zoom; a second press shows the whole map.
+func reset_view() -> void:
+	var c := town_center()
+	var there: bool = Vector2(rig.target.x - c.x, rig.target.z - c.z).length() < 1.5 and absf(rig.goal_dist - 40.0) < 2.0 and absf(rig.yaw) < 0.05
+	if there:
+		rig.reset(Vector3(W * 0.5, 0.0, H * 0.5), 85.0)
+	else:
+		rig.reset(c, 40.0)
+
+
+## Moves the view to a problem (or any tile) and selects it.
+func goto_tile(i: int, kind: String = "") -> void:
+	hud.log_panel.visible = false
+	if kind == "jam":
+		focus_issue(i)
+		return
+	rig.focus(Vector3(i % W + 0.5, 0, i / W + 0.5), minf(rig.goal_dist, 26.0))
+	selected = i
+	selected_line = null
+	_refresh_preview()
 
 
 func _on_vehicle_lost(v) -> void:
@@ -256,6 +295,7 @@ func _process(delta: float) -> void:
 	if _t_advisor <= 0.0:
 		_t_advisor = 1.5
 		issues = advisor.analyze(self)
+		alerts.update()
 
 
 # -------------------------------------------------------------------- stats
@@ -646,8 +686,12 @@ func plan_path(a: int, b: int) -> Array:
 
 func _unhandled_input(e: InputEvent) -> void:
 	if hud.menu.visible:
+		# Esc (or M) closes the menu again.
+		if started and e is InputEventKey and e.pressed and not e.echo and (e.keycode == KEY_ESCAPE or e.keycode == KEY_M):
+			hud.show_menu(false)
 		return
 	if e is InputEventMouseMotion:
+		last_map_mouse = e.position
 		var h := pick_tile(e.position)
 		if h != hover:
 			hover = h
@@ -659,14 +703,19 @@ func _unhandled_input(e: InputEvent) -> void:
 			_refresh_preview()
 	elif e is InputEventMouseButton:
 		if e.button_index == MOUSE_BUTTON_LEFT:
+			last_map_mouse = e.position
 			hover = pick_tile(e.position)
 			if e.pressed:
-				_press()
+				# Shift + drag moves the map (see the camera), it does not build.
+				if not e.shift_pressed:
+					_press()
 			else:
 				_release()
 			_refresh_preview()
-		elif e.button_index == MOUSE_BUTTON_RIGHT and e.pressed:
-			_cancel()
+		elif e.button_index == MOUSE_BUTTON_RIGHT and not e.pressed:
+			# A right-drag moves the map; only a plain click cancels.
+			if not rig.right_dragged:
+				_cancel()
 	elif e is InputEventKey and e.pressed and not e.echo:
 		if e.ctrl_pressed or e.meta_pressed:
 			match e.keycode:
@@ -692,12 +741,20 @@ func _unhandled_input(e: InputEvent) -> void:
 				set_speed(maxi(1, speed_idx - 1))
 			KEY_F1, KEY_H:
 				hud.toggle_help()
+			KEY_L:
+				hud.toggle_log()
+			KEY_C, KEY_HOME:
+				reset_view()
 			KEY_ENTER, KEY_KP_ENTER:
 				if tool == T_LINE:
 					finish_line()
 			KEY_ESCAPE:
 				if hud.help.visible:
 					hud.toggle_help()
+				elif hud.log_panel.visible:
+					hud.toggle_log()
+				elif hud.stats.visible:
+					hud.toggle_stats()
 				elif drag_start >= 0 or not line_draft.is_empty() or edit_line != null or selected >= 0 or selected_line != null:
 					_cancel()
 				else:
@@ -773,6 +830,7 @@ func _refresh_preview() -> void:
 	var one: Array = [hover] if hover >= 0 else []
 	var dragging := drag_start >= 0
 	var path: Array = drag_path if dragging else one
+	var tag := ""
 	match tool:
 		T_INSPECT:
 			var sel: Array = [selected] if selected >= 0 else []
@@ -793,16 +851,38 @@ func _refresh_preview() -> void:
 			else:
 				msg += " Bridges cost %d, steep hills %d per tile." % [Cfg.COST_BRIDGE, Cfg.COST_STEEP]
 			if dragging:
-				msg = "%s: %s, cost %d credits%s   (right-click cancels)" % [what, Cfg.fmt_dist(path.size()), cost, "" if ok else "  - not possible"]
+				var parts: String = roads.cost_breakdown(path, bp)
+				msg = "%s: %s, cost %d credits%s%s   (right-click cancels)" % [what, Cfg.fmt_dist(path.size()), cost, " = " + parts if parts != "" else "", "" if ok else "  - not possible"]
 			hud.set_hint(msg)
+			if hover >= 0:
+				if city.bmap.has(hover):
+					tag = "A building stands here - a street cannot go through it."
+				elif (bp and roads.any(hover)) or (not bp and roads.has(hover)):
+					tag = "Already built here: nothing to pay for this tile."
+				else:
+					tag = roads.cost_why(hover, bp)
 		T_LANE:
 			var cost2: int = roads.upgrade_cost(path)
 			view.set_preview(path, good if cost2 > 0 and cost2 <= credits else neutral)
 			hud.set_hint("Add lane: drag along an existing road. Cost %d credits." % cost2 if dragging else "Add lane: drag along an existing road to add one lane in each direction (max %d)." % Cfg.MAX_LANES)
+			if hover >= 0:
+				if not roads.has(hover):
+					tag = "Lanes can only be added to an existing road."
+				elif roads.lanes[hover] >= Cfg.MAX_LANES:
+					tag = "Already %d lanes each way - the maximum." % Cfg.MAX_LANES
+				else:
+					tag = "Extra lane: %d credits here. A lane costs as much as the road itself on this terrain (%s)." % [roads.road_cost(hover), roads.terrain_name(hover)]
 		T_BIKELANE:
 			var cost3: int = roads.bikelane_cost(path)
 			view.set_preview(path, good if cost3 > 0 and cost3 <= credits else neutral)
 			hud.set_hint("Bike lanes: drag along an existing road. Cost %d credits." % cost3 if dragging else "Bike lanes: drag along a road (%d per tile). Cyclists then no longer hold up the cars, and more people cycle." % Cfg.COST_BIKELANE)
+			if hover >= 0:
+				if not roads.has(hover):
+					tag = "Bike lanes are painted onto an existing road."
+				elif roads.bike[hover] == 1:
+					tag = "This road already has bike lanes."
+				else:
+					tag = "Bike lanes: %d credit per tile - just paint, on any terrain." % Cfg.COST_BIKELANE
 		T_BULLDOZE:
 			var t := bulldoze_target(hover)
 			var custom := []
@@ -846,6 +926,7 @@ func _refresh_preview() -> void:
 					hud.set_hint("Bus line: click the stops in the order the bus should visit them (new stops are built as needed).")
 				else:
 					hud.set_hint("Bus line: %d stop%s selected. Enter or right-click to finish. The bus runs to the last stop and back the same way." % [line_draft.size(), "" if line_draft.size() == 1 else "s"])
+	hud.set_cost_tag(tag)
 
 
 ## Shows the route of the selected building's last problem on the map.
@@ -927,7 +1008,7 @@ func inspect_text() -> String:
 			s2 += "[color=#ff9966][b]%s[/b][/color]\n%s\n" % [d.title, d.text]
 		return s2
 	var t := "Water" if world.water[i] == 1 else ("Steep hillside" if world.steep[i] == 1 else "Open land")
-	return "[b]%s[/b]\nA road costs %d credits per tile here, a cycle path %d." % [t, roads.road_cost(i), roads.bikepath_cost(i)]
+	return "[b]%s[/b]\n%s\n%s" % [t, roads.cost_why(i, false), roads.cost_why(i, true)]
 
 
 func _line_text(l) -> String:

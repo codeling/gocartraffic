@@ -8,6 +8,7 @@ extends SceneTree
 
 const Cfg = preload("res://scripts/cfg.gd")
 const Game = preload("res://scripts/game.gd")
+const Alerts = preload("res://scripts/alerts.gd")
 var game
 var frame := 0
 var failures := 0
@@ -109,6 +110,14 @@ func _tool_tests() -> void:
 	g.undo()
 	check(g.roads.degree(a.y * Cfg.W + a.x + 2) == 2 and not g.roads.any((a.y + 1) * Cfg.W + a.x + 2), "undo removes the stub and its junction")
 
+	# A street that merely passes the dead end of an old road also joins it.
+	var dead: int = a.y * Cfg.W + a.x + 4
+	g.build_road(g.l_path((a.y - 1) * Cfg.W + a.x + 5, (a.y + 1) * Cfg.W + a.x + 5, true))
+	check(g.roads.connected(dead, 1) and g.roads.degree(dead) == 2, "a street passing a dead end connects to it")
+	check(not g.roads.find_path(dead, (a.y + 1) * Cfg.W + a.x + 5).is_empty(), "and cars can drive from one to the other")
+	g.undo()
+	check(not g.roads.connected(dead, 1) and g.roads.degree(dead) == 1, "undo takes the connection away again")
+
 	# Lanes, bike lanes, stop - then bulldoze layer by layer.
 	g.add_lanes([i0])
 	g.add_bike_lanes([i0])
@@ -161,6 +170,76 @@ func _tool_tests() -> void:
 		check(not g.path_blocked(g.plan_path(from_i, to_i)), "road planning avoids buildings where one of the two bends is free")
 
 
+## Houses without a road are reported, once, and pause the game.
+func _alert_tests() -> void:
+	var g = game
+	print("alerts:")
+	g.alerts.update()
+	check(g.alerts.open.is_empty(), "a new building is given time to get its road")
+	g.ui_time += Cfg.PROBLEM_GRACE + 1.0
+	g.set_speed(1)
+	var n0: int = g.alerts.history.size()
+	g.alerts.update()
+	check(not g.alerts.open.is_empty(), "buildings without a road become open problems (%d)" % g.alerts.open.size())
+	check(g.alerts.history.size() > n0 and g.alerts.history[-1].level == Alerts.PROBLEM, "the problem is announced in the history")
+	check(g.speed_idx == 0, "a new problem pauses the game")
+	g.set_speed(1)
+	var n1: int = g.alerts.history.size()
+	g.alerts.update()
+	check(g.alerts.history.size() == n1 and g.speed_idx == 1, "the same problem is not announced twice")
+	Alerts.pause_enabled = false
+	g.alerts.notify("test", Alerts.PROBLEM, -1, "x", true)
+	check(g.speed_idx == 1, "automatic pausing can be switched off")
+	Alerts.pause_enabled = true
+	g.set_speed(0)
+	g.hud.toast("a plain message")
+	check(g.alerts.history[-1].text == "a plain message", "plain messages end up in the history")
+	g.hud._rebuild_log()
+	g.hud.minimap._rebuild()
+	g.hud.pointers._process(0.0)
+
+
+func _ui_tests() -> void:
+	var g = game
+	print("interface:")
+	var esc := InputEventKey.new()
+	esc.keycode = KEY_ESCAPE
+	esc.pressed = true
+	g.selected = -1
+	g.selected_line = null
+	g.hud.show_menu(true)
+	g._unhandled_input(esc)
+	check(not g.hud.menu.visible, "Esc closes the menu")
+	g._unhandled_input(esc)
+	check(g.hud.menu.visible, "Esc opens the menu")
+	g._unhandled_input(esc)
+	check(not g.hud.menu.visible, "and closes it again")
+	g.rig.target = Vector3(1.0, 0.0, 1.0)
+	g.reset_view()
+	var c: Vector3 = g.town_center()
+	check(absf(g.rig.target.x - c.x) < 0.01 and absf(g.rig.goal_dist - 40.0) < 0.01, "the view can be centred on the town")
+	g.reset_view()
+	check(g.rig.goal_dist > 60.0, "centring twice shows the whole map")
+	var fp: PackedVector2Array = g.rig.ground_footprint()
+	check(fp.size() == 4, "the camera footprint for the mini-map has four corners")
+	var water := -1
+	var steep := -1
+	for i in Cfg.W * Cfg.H:
+		if water < 0 and g.world.water[i] == 1:
+			water = i
+		if steep < 0 and g.world.steep[i] == 1:
+			steep = i
+	if water >= 0:
+		check(g.roads.cost_why(water).contains("bridge") and g.roads.cost_why(water).contains(str(Cfg.COST_BRIDGE)), "a road on water says why it costs %d" % Cfg.COST_BRIDGE)
+	if steep >= 0:
+		check(g.roads.cost_why(steep).contains("steep") and g.roads.cost_why(steep).contains(str(Cfg.COST_STEEP)), "a road on a slope says why it costs %d" % Cfg.COST_STEEP)
+	g.set_tool(g.T_ROAD)
+	g.hover = water if water >= 0 else 0
+	g._refresh_preview()
+	check(g.hud.cost_text != "", "the road tool explains the price of the hovered tile")
+	g.set_tool(g.T_INSPECT)
+
+
 func _process(_delta: float) -> bool:
 	frame += 1
 	if frame < 3:
@@ -185,7 +264,10 @@ func _run_main() -> void:
 	var g = game
 	g.credits = 1000000
 	check(g.started and not g.hud.menu.visible, "--seed starts the game directly")
+	check(g.speed_idx == 0 and not g.running(), "the game starts paused")
+	_alert_tests()
 	_tool_tests()
+	_ui_tests()
 
 	print("simulation:")
 	var d0: Vector2i = g.world.districts[0].pos
@@ -233,6 +315,7 @@ func _run_main() -> void:
 				g.day + 1, g.phase_name(), g.city.buildings.size(), g.traffic.count, g.traffic.bikes, g.walkers.size(), g.on_time_ratio(), g.delay_ema, g.delivered])
 	print("  modes (car, bus, bike, walk): ", g.mode_total, "  max cars ", max_cars, "  jams seen: ", jams.keys())
 	check(g.delivered > 300, "people are delivered on time (%d)" % g.delivered)
+	check(g.city.clusters.size() >= 2, "some buildings start new neighbourhoods far from the town (%d neighbourhoods)" % g.city.clusters.size())
 	check(max_cars >= 10, "cars drive (%d at once)" % max_cars)
 	check(g.mode_total[Cfg.M_BUS] > 0, "buses carry passengers (%d)" % g.mode_total[Cfg.M_BUS])
 	check(g.mode_total[Cfg.M_BIKE] > 0 and max_bikes > 0, "people cycle (%d)" % g.mode_total[Cfg.M_BIKE])

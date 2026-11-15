@@ -81,6 +81,28 @@ const BIKE_MAX := 30
 const MAX_TRANSFERS := 2
 const TIME_FACTOR := 2.5     # allowed time = 2.5 x empty-road time by car
 const WAIT_GIVE_UP := 600.0
+## Share of trips that go by car even when walking or cycling would be possible
+## (people with luggage, in a hurry, or who simply like their car).
+const SHORT_CAR_SHARE := 0.2
+
+# Where new buildings appear. Most grow around the town; now and then one
+# appears far out and becomes the nucleus of a new neighbourhood.
+const SPREAD_NEAR := 3.0         # spread (in tiles) at "close to the town"
+const SPREAD_FAR := 8.0          # spread at "anywhere on the map"
+const FAR_AFTER := 10            # no outlying buildings before the town has this many
+const FAR_CHANCE_NEAR := 0.05    # chance per new building at "close to the town"
+const FAR_CHANCE_ANY := 0.16     # chance per new building at "anywhere on the map"
+const FAR_MIN_DIST := 11         # an outlier is at least this many tiles from every building
+const FAR_MAX_DIST := 24         # ... and at most this many, so a road to it stays affordable
+const NUCLEUS_SIZE := 10         # a cluster with fewer buildings than this still attracts newcomers
+
+# Problems and notifications
+const PROBLEM_GRACE := 20.0      # seconds of play before a building without a road counts as a problem
+const PAUSE_COOLDOWN := 15.0     # seconds of play after resuming before the next automatic pause
+const PROBLEM_FORGET := 60.0     # a problem must stay gone this long before it can be announced again
+const LOG_MAX := 200
+const TOAST_HOLD: Array[float] = [4.0, 9.0, 16.0]   # info, notice, problem
+const TOAST_FADE: Array[float] = [0.8, 4.0, 6.0]
 
 enum {HOUSE, FACTORY, SHOP, FUN, OFFICE}
 const TYPE_NAMES: Array[String] = ["House", "Factory", "Shop", "Entertainment venue", "Office"]

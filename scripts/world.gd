@@ -142,6 +142,17 @@ func _classify() -> void:
 				flat[i] = 1
 
 
+## Height difference across a tile, in tile widths (0.34 = 34 % grade is the steep limit).
+func slope_at(i: int) -> float:
+	var x := i % W
+	var y := i / W
+	var h00 := corner[y * (W + 1) + x]
+	var h10 := corner[y * (W + 1) + x + 1]
+	var h01 := corner[(y + 1) * (W + 1) + x]
+	var h11 := corner[(y + 1) * (W + 1) + x + 1]
+	return maxf(maxf(h00, h10), maxf(h01, h11)) - minf(minf(h00, h10), minf(h01, h11))
+
+
 func _compute_water_distance() -> void:
 	wdist.fill(999)
 	var queue: Array[int] = []

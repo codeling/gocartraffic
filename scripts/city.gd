@@ -42,6 +42,8 @@ class Building:
 	var ok_today := 0
 	var fail_today := 0
 	var fail = null          # last problem: {kind, text, time, from, to, path}
+	var born := 0.0          # play time (g.ui_time) at which the building appeared
+	var cluster := -1        # neighbourhood the building belongs to
 
 
 class Leg:
@@ -74,6 +76,7 @@ var buildings: Array = []
 var by_type: Array = [[], [], [], [], []]
 var by_zone: Array = [[], [], [], []]
 var bmap := {}
+var clusters: Array = []     # neighbourhoods: each an Array of buildings
 var queued := {}
 var spawn_timer := 0.0
 var population := 0
@@ -96,12 +99,12 @@ func start() -> void:
 		return
 	var clustered: bool = g.cluster >= 0.4
 	for k in 5:
-		_spawn_at(Cfg.HOUSE, ds[0].pos, 2.0)
+		_spawn_at(Cfg.HOUSE, ds[0].pos, 2.0, false)
 	var ind: Vector2i = ds[1].pos if clustered and ds.size() > 1 else ds[0].pos
 	var com: Vector2i = ds[2].pos if clustered and ds.size() > 2 else ds[0].pos
-	_spawn_at(Cfg.FACTORY, ind, 2.0 if clustered else 7.0)
-	_spawn_at(Cfg.FACTORY, ind, 2.0 if clustered else 7.0)
-	_spawn_at(Cfg.SHOP, com, 2.0 if clustered else 5.0)
+	_spawn_at(Cfg.FACTORY, ind, 2.0 if clustered else 7.0, false)
+	_spawn_at(Cfg.FACTORY, ind, 2.0 if clustered else 7.0, false)
+	_spawn_at(Cfg.SHOP, com, 2.0 if clustered else 5.0, false)
 
 
 func tick(dt: float) -> void:
@@ -150,23 +153,115 @@ func spawn_next() -> void:
 			best_def = deficit
 			type = t
 	var zone: int = Cfg.ZONE[type]
+	# Now and then a building appears far out: the nucleus of a new neighbourhood.
+	if buildings.size() >= Cfg.FAR_AFTER and rng.randf() < far_chance():
+		if _spawn_far(type):
+			return
 	# How tightly new buildings hug the existing town.
-	var sigma: float = lerpf(11.0, 2.2, g.compact) + sqrt(float(by_zone[zone].size())) * 0.3
+	var sigma: float = lerpf(Cfg.SPREAD_FAR, Cfg.SPREAD_NEAR, g.compact) + sqrt(float(by_zone[zone].size())) * 0.25
 	var same: Array = by_zone[zone]
 	for attempt in 3:
 		var anchor := Vector2i(-1, -1)
-		if rng.randf() < g.cluster:
+		var home_cluster := -1
+		var young: Array = _young_clusters()
+		if not young.is_empty() and rng.randf() < 0.3:
+			# A young neighbourhood is where the next buildings are wanted.
+			var cl: Array = young[rng.randi() % young.size()]
+			var yb = cl[rng.randi() % cl.size()]
+			anchor = Vector2i(yb.x, yb.y)
+			home_cluster = yb.cluster
+		elif rng.randf() < g.cluster:
 			# Zoning: stay with buildings of the same kind.
 			if not same.is_empty():
 				var b = same[rng.randi() % same.size()]
 				anchor = Vector2i(b.x, b.y)
+				home_cluster = b.cluster
 			else:
 				anchor = _district_seed(zone)
 		if anchor.x < 0:
 			var b2 = buildings[rng.randi() % buildings.size()]
 			anchor = Vector2i(b2.x, b2.y)
-		if _spawn_at(type, anchor, sigma * (1.0 + attempt)):
+			home_cluster = b2.cluster
+		if _spawn_at(type, anchor, sigma * (1.0 + 0.5 * attempt), true, home_cluster):
 			return
+
+
+## Chance that the next building appears far from the town. Lower when
+## outlying neighbourhoods are still small, so they are not left behind.
+func far_chance() -> float:
+	var p: float = lerpf(Cfg.FAR_CHANCE_ANY, Cfg.FAR_CHANCE_NEAR, g.compact)
+	if _young_clusters().size() >= 2:
+		p *= 0.25
+	return p
+
+
+func _young_clusters() -> Array:
+	var out := []
+	for cl in clusters:
+		if not cl.is_empty() and cl.size() < Cfg.NUCLEUS_SIZE and clusters.size() > 1:
+			out.append(cl)
+	return out
+
+
+func _nearest_building_dist(x: int, y: int) -> int:
+	var best := 1 << 20
+	for b in buildings:
+		best = mini(best, absi(b.x - x) + absi(b.y - y))
+	return best
+
+
+## A building far from the town. It is placed where a road to it is still
+## affordable, and it starts a neighbourhood of its own.
+func _spawn_far(type: int) -> bool:
+	for attempt in 60:
+		var x := rng.randi_range(2, W - 3)
+		var y := rng.randi_range(2, H - 3)
+		var d := _nearest_building_dist(x, y)
+		if d < Cfg.FAR_MIN_DIST or d > Cfg.FAR_MAX_DIST:
+			continue
+		if _spawn_at(type, Vector2i(x, y), 1.0, true, -1, 3):
+			return true
+	return false
+
+
+## Rough price of the road that would connect a new building at (x, y) to the
+## nearest existing building or road: distance, plus the extra cost of bridges
+## and slopes on the straight line between them.
+func connect_cost(x: int, y: int) -> int:
+	var best := 1 << 20
+	var bx := x
+	var by := y
+	for b in buildings:
+		var d: int = absi(b.x - x) + absi(b.y - y)
+		if d < best:
+			best = d
+			bx = b.x
+			by = b.y
+	for i in roads.tiles:
+		var rx: int = i % W
+		var ry: int = i / W
+		var d2: int = absi(rx - x) + absi(ry - y)
+		if d2 < best:
+			best = d2
+			bx = rx
+			by = ry
+	if best >= (1 << 20):
+		return 0
+	var cost: int = maxi(0, best - 1) * Cfg.COST_ROAD
+	for k in range(1, best):
+		var t := float(k) / best
+		var i2 := int(round(lerpf(by, y, t))) * W + int(round(lerpf(bx, x, t)))
+		if world.water[i2] == 1:
+			cost += Cfg.COST_BRIDGE - Cfg.COST_ROAD
+		elif world.steep[i2] == 1:
+			cost += Cfg.COST_STEEP - Cfg.COST_ROAD
+	return cost
+
+
+## New buildings only appear where the player can still afford to reach them:
+## the road to them may cost a fifth of the credits, but at least 150.
+func _affordable(x: int, y: int) -> bool:
+	return connect_cost(x, y) <= maxf(150.0, float(g.credits) * 0.2)
 
 
 func _district_seed(zone: int) -> Vector2i:
@@ -177,8 +272,8 @@ func _district_seed(zone: int) -> Vector2i:
 	return Vector2i(-1, -1)
 
 
-func _spawn_at(type: int, anchor: Vector2i, sigma: float) -> bool:
-	for attempt in 40:
+func _spawn_at(type: int, anchor: Vector2i, sigma: float, check_cost: bool = true, cl: int = -1, tries: int = 40) -> bool:
+	for attempt in tries:
 		var x := int(round(anchor.x + rng.randfn(0.0, sigma)))
 		var y := int(round(anchor.y + rng.randfn(0.0, sigma)))
 		if not world.can_build(x, y):
@@ -188,6 +283,8 @@ func _spawn_at(type: int, anchor: Vector2i, sigma: float) -> bool:
 			continue
 		var i := y * W + x
 		if bmap.has(i) or roads.any(i):
+			continue
+		if check_cost and not buildings.is_empty() and not _affordable(x, y):
 			continue
 		var b = _new_building(type, x, y)
 		if type == Cfg.HOUSE:
@@ -200,7 +297,7 @@ func _spawn_at(type: int, anchor: Vector2i, sigma: float) -> bool:
 					b.car_colors.append(CAR_COLORS[rng.randi() % CAR_COLORS.size()])
 			b.cars = b.car_colors.size()
 			b.home_cars = b.car_colors.duplicate()
-		_register(b)
+		_register(b, cl)
 		if type == Cfg.HOUSE:
 			plan_house(b, g.hour() + 0.3)
 		return true
@@ -217,9 +314,28 @@ func _new_building(type: int, x: int, y: int):
 	return b
 
 
-func _register(b) -> void:
+## Which neighbourhood a building belongs to: the one it was spawned into, else
+## that of a building within 8 tiles, else a new one.
+func _assign_cluster(b, cl: int) -> void:
+	if cl < 0:
+		var best := 9
+		for o in buildings:
+			var d: int = absi(o.x - b.x) + absi(o.y - b.y)
+			if d < best:
+				best = d
+				cl = o.cluster
+	if cl < 0:
+		cl = clusters.size()
+		clusters.append([])
+	b.cluster = cl
+	clusters[cl].append(b)
+
+
+func _register(b, cl: int = -1) -> void:
 	b.slots = 9 if b.apt else SLOTS[b.type]
+	b.born = g.ui_time
 	population += b.residents
+	_assign_cluster(b, cl)
 	buildings.append(b)
 	by_type[b.type].append(b)
 	by_zone[Cfg.ZONE[b.type]].append(b)
@@ -405,8 +521,8 @@ func start_outing(b, purpose: String, n: int, stay: float, tries: int) -> void:
 
 static func walk_prob(d: float) -> float:
 	if d <= Cfg.WALK_LIKELY:
-		return 0.85
-	return maxf(0.0, 0.85 * (Cfg.WALK_MAX - d) / (Cfg.WALK_MAX - Cfg.WALK_LIKELY))
+		return 0.8
+	return maxf(0.0, 0.8 * (Cfg.WALK_MAX - d) / (Cfg.WALK_MAX - Cfg.WALK_LIKELY))
 
 
 static func bike_prob(d: float, share: float) -> float:
@@ -432,6 +548,10 @@ func _choose_and_go(leg, may_wait: bool) -> bool:
 	leg.dist = float(car.size() - 1) if car.size() > 1 else maxf(1.0, man * 1.2)
 	leg.ff = leg.dist / Cfg.CAR_SPEED
 
+	# Some people drive even where walking or cycling would do.
+	if not car.is_empty() and not leg.home.home_cars.is_empty() and man <= Cfg.BIKE_MAX and rng.randf() < Cfg.SHORT_CAR_SHARE:
+		_go_car(leg, car)
+		return true
 	if man <= Cfg.WALK_MAX and rng.randf() < walk_prob(man):
 		var pts := walk_points(a, b)
 		if not pts.is_empty():
