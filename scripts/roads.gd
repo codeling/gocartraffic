@@ -92,6 +92,49 @@ func speed_factor(i: int) -> float:
 	return Cfg.STEEP_SPEED if world.steep[i] == 1 else 1.0
 
 
+func terrain_name(i: int) -> String:
+	if world.water[i] == 1:
+		return "bridge over water"
+	if world.steep[i] == 1:
+		return "steep slope"
+	return "level land"
+
+
+## Why does this tile cost what it costs? Shown next to the cursor.
+func cost_why(i: int, bike_path: bool = false) -> String:
+	var what := "Cycle path" if bike_path else "Road"
+	var base := Cfg.COST_BIKEPATH if bike_path else Cfg.COST_ROAD
+	var price := bikepath_cost(i) if bike_path else road_cost(i)
+	if world.water[i] == 1:
+		return "%s: %d per tile - bridge. This tile is water, so it needs pillars and a deck (%d on dry land)." % [what, price, base]
+	if world.steep[i] == 1:
+		return "%s: %d per tile - steep slope (%d%% grade, over %d%%). The hillside has to be cut away (%d on level ground). Vehicles also crawl uphill here." % [
+			what, price, int(round(world.slope_at(i) * 100.0)), int(round(Cfg.STEEP_LIMIT * 100.0)), base]
+	return "%s: %d per tile - level open land, the standard price." % [what, price]
+
+
+## "12 x 10 level + 3 x 30 steep + 2 x 60 bridge" for the new tiles of a path.
+func cost_breakdown(path: Array, bike_path: bool) -> String:
+	var n := [0, 0, 0]
+	for i in path:
+		if bike_path:
+			if lanes[i] != 0 or bike[i] != 0:
+				continue
+		elif lanes[i] != 0:
+			continue
+		n[2 if world.water[i] == 1 else (1 if world.steep[i] == 1 else 0)] += 1
+	var price: Array = [
+		Cfg.COST_BIKEPATH if bike_path else Cfg.COST_ROAD,
+		Cfg.COST_BIKEPATH_STEEP if bike_path else Cfg.COST_STEEP,
+		Cfg.COST_BIKEPATH_BRIDGE if bike_path else Cfg.COST_BRIDGE]
+	var names := ["level", "steep", "bridge"]
+	var parts := []
+	for k in 3:
+		if n[k] > 0:
+			parts.append("%d x %d %s" % [n[k], price[k], names[k]])
+	return " + ".join(parts)
+
+
 func plan_cost(path: Array, bike_path: bool) -> int:
 	var c := 0
 	for i in path:
@@ -166,6 +209,23 @@ func _link(a: int, b: int, rec: Dictionary) -> void:
 	rec.conns.append([a, b])
 
 
+## Two neighbouring tiles of the same network (road with road, cycle path with
+## cycle path) are always joined.
+func _joinable(a: int, b: int) -> bool:
+	if lanes[a] > 0 and lanes[b] > 0:
+		return true
+	return lanes[a] == 0 and lanes[b] == 0 and bike[a] == 2 and bike[b] == 2
+
+
+## Joins every tile of the path to all its neighbours of the same kind - also a
+## dead end of an old road that the new one merely passes by.
+func _join_neighbours(i: int, rec: Dictionary) -> void:
+	for d in 4:
+		var n := nbr(i, d)
+		if n >= 0 and any(n) and _joinable(i, n):
+			_link(i, n, rec)
+
+
 ## A freshly drawn end joins the road it runs into.
 func _auto_end(end: int, prev: int, rec: Dictionary) -> void:
 	if degree(end) != 1:
@@ -199,6 +259,8 @@ func build(path: Array, bike_path: bool = false) -> Dictionary:
 	elif path.size() > 1:
 		_auto_end(path[0], path[1], rec)
 		_auto_end(path[-1], path[-2], rec)
+	for i in path:
+		_join_neighbours(i, rec)
 	version += 1
 	return rec
 
@@ -354,4 +416,8 @@ func from_save(list: Array) -> void:
 				astar_bike.connect_points(i, n)
 				if lanes[i] > 0 and lanes[n] > 0:
 					astar.connect_points(i, n)
+	# Older saves can contain neighbouring roads that were never joined.
+	var rec := {"tiles": [], "conns": []}
+	for i in tiles:
+		_join_neighbours(i, rec)
 	version += 1

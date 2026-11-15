@@ -147,6 +147,8 @@ func _setup_light() -> void:
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-52.0, -38.0, 0.0)
 	sun.shadow_enabled = true
+	# Every shadow split draws all casters again; two are plenty for a town.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	sun.directional_shadow_max_distance = 110.0
 	sun.light_energy = 0.8
 	add_child(sun)
@@ -580,11 +582,20 @@ func _acc_prism(size: Vector3, pos: Vector3, col: Color) -> void:
 	mb.quad(l0, l1, r1, r0, col)
 
 
-func _acc_finish(parent: Node3D) -> void:
+## Hands over the parts collected since _acc_on was set and resets the collector.
+func _acc_take() -> Dictionary:
+	var parts := _acc.duplicate()
+	_acc.clear()
+	_acc_on = false
+	return parts
+
+
+## One mesh, one surface per finish, from collected parts {key: [MB, metallic, rough]}.
+func _parts_mesh(parts: Dictionary) -> ArrayMesh:
 	var m := ArrayMesh.new()
 	var mats: Array[Material] = []
-	for key in _acc:
-		var e: Array = _acc[key]
+	for key in parts:
+		var e: Array = parts[key]
 		var mb: MB = e[0]
 		if mb.v.is_empty():
 			continue
@@ -597,11 +608,52 @@ func _acc_finish(parent: Node3D) -> void:
 		mats.append(_part_mat(e[1], e[2]))
 	for i in mats.size():
 		m.surface_set_material(i, mats[i])
-	var mi := MeshInstance3D.new()
-	mi.mesh = m
-	parent.add_child(mi)
-	_acc.clear()
-	_acc_on = false
+	return m
+
+
+## Buildings are merged into one mesh per 8 x 8 tiles, so the number of draw
+## calls hardly grows with the size of the town (every shadow split draws every
+## mesh again, and the web renderer gives up at a few thousand draw calls).
+const CHUNK := 8
+var _parts := {}             # building id -> [parts, transform]
+var _chunks := {}            # Vector2i -> {mi, ids}
+var _chunks_dirty := {}
+
+
+func _merge_building(b, temp) -> void:
+	if temp != null and is_instance_valid(temp):
+		temp.queue_free()
+	var key := Vector2i(b.x / CHUNK, b.y / CHUNK)
+	var c = _chunks.get(key)
+	if c == null:
+		var mi := MeshInstance3D.new()
+		add_child(mi)
+		c = {"mi": mi, "ids": []}
+		_chunks[key] = c
+	c.ids.append(b.id)
+	_chunks_dirty[key] = true
+
+
+func _rebuild_chunks() -> void:
+	for key in _chunks_dirty:
+		var c: Dictionary = _chunks[key]
+		var acc := {}
+		for id in c.ids:
+			var e: Array = _parts[id]
+			var xf: Transform3D = e[1]
+			var parts: Dictionary = e[0]
+			for k in parts:
+				var src: Array = parts[k]
+				if not acc.has(k):
+					acc[k] = [MB.new(), src[1], src[2]]
+				var dst: MB = acc[k][0]
+				var mb: MB = src[0]
+				for q in mb.v.size():
+					dst.v.append(xf * mb.v[q])
+					dst.n.append(xf.basis * mb.n[q])
+					dst.c.append(mb.c[q])
+		c.mi.mesh = _parts_mesh(acc)
+	_chunks_dirty.clear()
 
 
 func _part_mat(metallic: float, rough: float) -> StandardMaterial3D:
@@ -700,7 +752,8 @@ func add_building(b, animate: bool = true) -> void:
 			_box(body, Vector3(0.52, 1.0, 0.52), Vector3(0, hgt - 0.45, 0), Color(0.42, 0.6, 0.8), 0.5, 0.25)
 			_box(body, Vector3(0.56, 0.05, 0.56), Vector3(0, hgt + 0.07, 0), Color(0.3, 0.33, 0.4))
 			_box(body, Vector3(0.56, 0.05, 0.56), Vector3(0, 0.08, 0), Color(0.3, 0.33, 0.4))
-	_acc_finish(body)
+	var parts := _acc_take()
+	_parts[b.id] = [parts, Transform3D(Basis(Vector3.UP, body.rotation.y), root.position)]
 	var mark := Label3D.new()
 	mark.text = "!"
 	mark.font_size = 96
@@ -717,9 +770,16 @@ func add_building(b, animate: bool = true) -> void:
 	buildings_root.add_child(root)
 	b.node = root
 	if animate:
+		# Grows on its own for half a second, then joins the merged mesh of its area.
+		var temp := MeshInstance3D.new()
+		temp.mesh = _parts_mesh(parts)
+		body.add_child(temp)
 		body.scale = Vector3(1, 0.05, 1)
 		var tw := create_tween()
 		tw.tween_property(body, "scale", Vector3.ONE, 0.5).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		tw.finished.connect(_merge_building.bind(b, temp))
+	else:
+		_merge_building(b, null)
 
 
 func update_marks() -> void:
@@ -895,6 +955,8 @@ func update_vehicles(delta: float) -> void:
 	_update_walkers()
 	if trees_dirty:
 		_fill_trees()
+	if not _chunks_dirty.is_empty():
+		_rebuild_chunks()
 
 
 const CLOTHES: Array[Color] = [
@@ -962,9 +1024,13 @@ func rebuild_transit() -> void:
 		var px := tx + 0.88
 		var pz := ty + 0.12
 		root.position = Vector3(px, world.road_h(px, pz), pz)
+		_acc_on = true
 		_cyl(root, 0.015, 0.015, 0.34, Vector3(0, 0.17, 0), Color(0.3, 0.3, 0.32))
 		_box(root, Vector3(0.16, 0.12, 0.03), Vector3(0, 0.36, 0), Color(0.15, 0.4, 0.85))
 		_box(root, Vector3(0.2, 0.02, 0.12), Vector3(0, 0.02, 0.06), Color(0.85, 0.8, 0.3))
+		var sign_mi := MeshInstance3D.new()
+		sign_mi.mesh = _parts_mesh(_acc_take())
+		root.add_child(sign_mi)
 		var lab := Label3D.new()
 		lab.font_size = 48
 		lab.pixel_size = 0.005
