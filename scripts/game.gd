@@ -4,6 +4,7 @@ extends Node3D
 const Cfg = preload("res://scripts/cfg.gd")
 const World = preload("res://scripts/world.gd")
 const Roads = preload("res://scripts/roads.gd")
+const SaveCheck = preload("res://scripts/save_check.gd")
 const Traffic = preload("res://scripts/traffic.gd")
 const City = preload("res://scripts/city.gd")
 const Transit = preload("res://scripts/transit.gd")
@@ -1071,6 +1072,10 @@ func load_text(text: String) -> void:
 		return
 	if int(d.get("version", 0)) > SAVE_VERSION:
 		hud.toast("This save was made with a newer version of the game")
+		return
+	var problem: String = SaveCheck.check(d)
+	if problem != "":
+		hud.toast("This save file is damaged or invalid (%s)" % problem)
 		return
 	boot = {"load": d}
 	get_tree().reload_current_scene()
